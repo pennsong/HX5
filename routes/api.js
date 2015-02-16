@@ -1,5 +1,7 @@
 var jwt = require('jwt-simple');
 var moment = require('moment');
+var async = require("async");
+
 function apiRouter(app, db)
 {
     app.set('jwtTokenSecret', 'ppToken');
@@ -12,19 +14,30 @@ function apiRouter(app, db)
             return;
         }
 
-        db.User.findOne(
-            {
-                username: req.query.username,
-                password: req.query.password
-            },
-            //'username',
-            function(err, user) {
-                if (err) {
-                    res.statusCode = 500;
-                    res.json({result: '用户查询错误!', detail: err});
-                }
-                else{
-                    if (user == null)
+        function finalCallback(err, result) {
+            if (err){
+                res.statusCode = 400;
+                res.json({result: err.toString()});
+            }
+            else{
+                res.json({result: result});
+            }
+        }
+
+        async.waterfall([
+                function(next){
+                    db.User.findOne(
+                        {
+                            username: req.query.username,
+                            password: req.query.password
+                        },
+                        next
+                    );
+                },
+                function(result, next)
+                {
+
+                    if (result == null)
                     {
                         // user not found
                         res.statusCode = 401;
@@ -35,19 +48,29 @@ function apiRouter(app, db)
                         //用户名密码正确
                         var expires = moment().add(100, 'year').valueOf();
                         var token = jwt.encode({
-                            iss: user.id,
+                            iss: result.id,
                             exp: expires
                         }, app.get('jwtTokenSecret'));
-
-                        res.json({
-                            token : token,
-                            expires: expires,
-                            user: user
-                        });
+                        db.User.update(
+                            { _id: result.id },
+                            {
+                                $set:
+                                {
+                                    token: token
+                                }
+                            },
+                            function (err, numberAffected, raw)
+                            {
+                                next(err, token);
+                            }
+                        );
                     }
                 }
-            });
+            ],
+            finalCallback
+        );
     });
+
 
     app.all("*", function(req, res, next){
         var token = (req.body && req.body.access_token)
@@ -55,37 +78,32 @@ function apiRouter(app, db)
             || req.headers['x-access-token'];
 
         if (token) {
-            try {
-                var decoded = jwt.decode(token, app.get('jwtTokenSecret'));
-                // handle token here
-                db.User.findOne(
-                    {
-                        _id: decoded.iss
-                    },
-                    function(err, user) {
-                        if (err) {
-                            res.statusCode = 500;
-                            res.json({result: '用户查询错误!', detail: err});
+            //var decoded = jwt.decode(token, app.get('jwtTokenSecret'));
+            // handle token here
+            db.User.findOne(
+                {
+                    token: token
+                },
+                function(err, user) {
+                    if (err) {
+                        res.statusCode = 500;
+                        res.json({result: '令牌查询错误!', detail: err});
+                    }
+                    else{
+                        if (user == null)
+                        {
+                            // user not found
+                            res.statusCode = 401;
+                            res.json({result: '请重新登陆!'});
                         }
-                        else{
-                            if (user == null)
-                            {
-                                // user not found
-                                res.statusCode = 401;
-                                res.json({result: '用户不存在!'});
-                            }
-                            else
-                            {
-                                req.user = user;
-                                next();
-                            }
+                        else
+                        {
+                            req.user = user;
+                            next();
                         }
                     }
-                );
-            } catch (err) {
-                res.statusCode = 401;
-                res.json({result: '解析令牌错误!', detail: err.toString()});
-            }
+                }
+            );
         } else {
             res.statusCode = 401;
             res.json({result: '请先登陆!'});
