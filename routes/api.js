@@ -114,38 +114,69 @@ function apiRouter(app, db)
             .exec(next);
     }
 
-    function searchLoc(keyword, callback){
-        var ak = "F9266a6c6607e33fb7c3d8da0637ce0b";
-        var output = "json";
-        var radius = "2000";
-        var scope = "1";
-        var data = "query=" + encodeURIComponent(keyword);
-        data += "&ak=" + ak;
-        data += "&output=" + output;
-        data += "&radius=" + radius;
-        data += "&scope=" + scope;
-        data += "&location=" + "31.209335300000003" + "," + "121.59487019999999";
-        data += "&filter=sort_name:distance";
+    function searchLoc(keyword, lng, lat, callback){
+        async.waterfall([
+                function(next)
+                {
+                    var ak = "F9266a6c6607e33fb7c3d8da0637ce0b";
+                    var data = "ak=" + ak;
+                    data += "&coords=" + lng + "," + lat;
 
-        var options = {
-            host: 'api.map.baidu.com',
-            port: 80,
-            path: '/place/v2/search?' + data
-        };
+                    var options = {
+                        host: 'api.map.baidu.com',
+                        port: 80,
+                        path: '/geoconv/v1/?' + data
+                    };
+                    http.get(options, function(res, data) {
+                        res.setEncoding('utf8');
+                        result = "";
+                        res.on("data", function(chunk) {
+                            result += chunk;
+                        });
+                        res.on('end', function () {
+                            next(null, JSON.parse(result));
+                        });
 
-        http.get(options, function(res, data) {
-            res.setEncoding('utf8');
-            result = "";
-            res.on("data", function(chunk) {
-                result += chunk;
-            });
-            res.on('end', function () {
-                callback(null, JSON.parse(result));
-            });
+                    }).on('error', function(err) {
+                        next(err, null);
+                    });
+                },
+                function(result, next)
+                {
+                    var ak = "F9266a6c6607e33fb7c3d8da0637ce0b";
+                    var output = "json";
+                    var radius = "2000";
+                    var scope = "1";
+                    var data = "query=" + encodeURIComponent(keyword);
+                    data += "&ak=" + ak;
+                    data += "&output=" + output;
+                    data += "&radius=" + radius;
+                    data += "&scope=" + scope;
+                    data += "&location=" + "31.209335300000003" + "," + "121.59487019999999";
+                    data += "&filter=sort_name:distance";
 
-        }).on('error', function(e) {
-            callback(e);
-        });
+                    var options = {
+                        host: 'api.map.baidu.com',
+                        port: 80,
+                        path: '/place/v2/search?' + data
+                    };
+
+                    http.get(options, function(res, data) {
+                        res.setEncoding('utf8');
+                        result = "";
+                        res.on("data", function(chunk) {
+                            result += chunk;
+                        });
+                        res.on('end', function () {
+                            callback(null, JSON.parse(result));
+                        });
+                    }).on('error', function(e) {
+                        callback(e);
+                    });
+                }
+            ],
+            callback
+        );
     }
 
 
@@ -248,7 +279,7 @@ function apiRouter(app, db)
     });
 
     app.post('/getNearLocation', function(req, res) {
-        searchLoc('1', function(err, result){
+        searchLoc(req.body.keyword, req.user.lastLocation[0], req.user.lastLocation[1], function(err, result){
             if (err)
             {
                 res.statusCode = 400;
@@ -259,6 +290,159 @@ function apiRouter(app, db)
                 res.json(result);
             }
         });
+    });
+
+    app.post('/meetCreateConfirmSearch', function(req, res) {
+//        req.body.specialInfo = {
+//            sex: '男',
+//            hair  : null,
+//            glasses : null,
+//            clothesType : null,
+//            clothesColor : null,
+//            clothesStyle : null
+//        };
+        if (!req.body.specialInfo)
+        {
+            res.statusCode = 400;
+            res.json({result: '非法请求,没有特征信息!'});
+            return;
+        }
+
+        function finalCallback(err, result) {
+            if (err){
+                res.statusCode = 400;
+                res.json({result: err.toString()});
+            }
+            else{
+                res.json(result);
+            }
+        }
+
+        var friends;
+        var createMeetTargets;
+
+        async.waterfall([
+                function(next)
+                {
+                    //找本人发送待回复的meet中的目标
+                    db.Meet.find(
+                        {
+                            "creater.username": req.user.username,
+                            status: '待回复'
+                        })
+                        .select('target.username')
+                        .sort('-_id')
+                        .exec(next);
+                },
+                function(result, next)
+                {
+                    createMeetTargets = result;
+                    //get friends
+                    getFriends(req.user.username, next);
+                },
+                function(result, next)
+                {
+                    friends = result.map(function(item){
+                        if (item.creater.username == req.user.username)
+                        {
+                            return item.target.username
+                        }
+                        else
+                        {
+                            return item.creater.username
+                        }
+
+                    });
+                    next(null, null);
+                },
+                function(result, next)
+                {
+                    db.User.aggregate(
+                        [
+                            {
+                                $project:
+                                {
+                                    score:
+                                    {
+                                        $add:
+                                            [
+                                                {
+                                                    $cond:
+                                                        [
+                                                            {
+                                                                $eq: [ "$specialInfo.sex", req.body.specialInfo.sex ]
+                                                            },
+                                                            1,
+                                                            0
+                                                        ]
+                                                },
+                                                {
+                                                    $cond:
+                                                        [
+                                                            {
+                                                                $eq: [ "$specialInfo.hair", req.body.specialInfo.hair ]
+                                                            },
+                                                            1,
+                                                            0
+                                                        ]
+                                                },
+                                                {
+                                                    $cond:
+                                                        [
+                                                            {
+                                                                $eq: [ "$specialInfo.glasses", req.body.specialInfo.glasses ]
+                                                            },
+                                                            1,
+                                                            0
+                                                        ]
+                                                },
+                                                {
+                                                    $cond:
+                                                        [
+                                                            {
+                                                                $eq: [ "$specialInfo.clothesType", req.body.specialInfo.clothesType ]
+                                                            },
+                                                            1,
+                                                            0
+                                                        ]
+                                                },
+                                                {
+                                                    $cond:
+                                                        [
+                                                            {
+                                                                $eq: [ "$specialInfo.clothesColor", req.body.specialInfo.clothesColor ]
+                                                            },
+                                                            1,
+                                                            0
+                                                        ]
+                                                },
+                                                {
+                                                    $cond:
+                                                        [
+                                                            {
+                                                                $eq: [ "$specialInfo.clothesStyle", req.body.specialInfo.clothesStyle ]
+                                                            },
+                                                            1,
+                                                            0
+                                                        ]
+                                                }
+                                            ]
+                                    }
+                                }
+                            },
+                            {
+                                $match :
+                                {
+                                    score : { $gte : 4 }
+                                }
+                            }
+                        ],
+                        next
+                    );
+                }
+            ],
+            finalCallback
+        );
     });
 
 
