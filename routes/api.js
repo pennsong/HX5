@@ -179,6 +179,38 @@ function apiRouter(app, db)
         );
     }
 
+    function sendMeetCheck(req) {
+        return true;
+
+        if (req.user.specialInfoTime
+            && req.user.specialInfoTime > moment(moment().format('YYYY-MM-DD')).valueOf()
+            && req.user.lastLocationTime > moment().add(-5, 'm').valueOf()
+            && req.user.lastMeetCreateTime < moment().add(-30, 's').valueOf()
+            )
+        {
+            return true;
+        }
+        else
+        {
+            return false;
+        }
+    };
+
+    function createFriend(creater, target, callback){
+        db.Friend.create(
+            {
+                creater:{
+                    username: creater.username,
+                    nickname: creater.nickname
+                },
+                target:{
+                    username: target.username,
+                    nickname: target.nickname
+                }
+            },
+            callback
+        );
+    }
 
     app.post('/login', function(req, res) {
         if (!(req.body.username && req.body.password))
@@ -264,11 +296,7 @@ function apiRouter(app, db)
     });
 
     app.post('/sendMeetCheck', function(req, res) {
-        if (req.user.specialInfoTime
-            && req.user.specialInfoTime > moment(moment().format('YYYY-MM-DD')).valueOf()
-            && req.user.lastLocationTime > moment().add(-5, 'm').valueOf()
-            && req.user.lastMeetCreateTime > moment().add(-30, 's').valueOf()
-            )
+        if (sendMeetCheck(req))
         {
             res.json({result: 'yes'});
         }
@@ -293,18 +321,25 @@ function apiRouter(app, db)
     });
 
     app.post('/meetCreateConfirmSearch', function(req, res) {
-//        req.body.specialInfo = {
-//            sex: '男',
-//            hair  : null,
-//            glasses : null,
-//            clothesType : null,
-//            clothesColor : null,
-//            clothesStyle : null
-//        };
-        if (!req.body.specialInfo)
+        req.body.meetCondition = {};
+
+        req.body.meetCondition.specialInfo = {
+            sex: '男',
+            hair  : null,
+            glasses : null,
+            clothesType : null,
+            clothesColor : null,
+            clothesStyle : null
+        };
+        req.body.sendLoc = {
+            lng: 121.5949949426754,
+            lat: 31.209359545138003
+        };
+
+        if (!(req.body.meetCondition && req.body.sendLoc))
         {
             res.statusCode = 400;
-            res.json({result: '非法请求,没有特征信息!'});
+            res.json({result: '非法请求,没有特征信息或发送地理位置!'});
             return;
         }
 
@@ -360,8 +395,23 @@ function apiRouter(app, db)
                     db.User.aggregate(
                         [
                             {
+                                $geoNear: {
+                                    near: { type: "Point", coordinates: [ Number(req.body.sendLoc.lng), Number(req.body.sendLoc.lat) ] },
+                                    distanceField: "lastLocation",
+                                    maxDistance: 500,
+                                    query: {
+//                                        specialInfoTime: {$gt: moment().add(-15, 'm').valueOf()},
+                                        "specialInfo.sex":req.body.meetCondition.specialInfo.sex,
+                                        username: {$ne: req.user.username, $nin: createMeetTargets.concat(friends)}
+                                    },
+                                    spherical: true
+                                }
+                            },
+                            {
                                 $project:
                                 {
+                                    username: 1,
+                                    specialPic: 1,
                                     score:
                                     {
                                         $add:
@@ -370,7 +420,7 @@ function apiRouter(app, db)
                                                     $cond:
                                                         [
                                                             {
-                                                                $eq: [ "$specialInfo.sex", req.body.specialInfo.sex ]
+                                                                $eq: [ "$specialInfo.sex", req.body.meetCondition.specialInfo.sex ]
                                                             },
                                                             1,
                                                             0
@@ -380,7 +430,7 @@ function apiRouter(app, db)
                                                     $cond:
                                                         [
                                                             {
-                                                                $eq: [ "$specialInfo.hair", req.body.specialInfo.hair ]
+                                                                $eq: [ "$specialInfo.hair", req.body.meetCondition.specialInfo.hair ]
                                                             },
                                                             1,
                                                             0
@@ -390,7 +440,7 @@ function apiRouter(app, db)
                                                     $cond:
                                                         [
                                                             {
-                                                                $eq: [ "$specialInfo.glasses", req.body.specialInfo.glasses ]
+                                                                $eq: [ "$specialInfo.glasses", req.body.meetCondition.specialInfo.glasses ]
                                                             },
                                                             1,
                                                             0
@@ -400,7 +450,7 @@ function apiRouter(app, db)
                                                     $cond:
                                                         [
                                                             {
-                                                                $eq: [ "$specialInfo.clothesType", req.body.specialInfo.clothesType ]
+                                                                $eq: [ "$specialInfo.clothesType", req.body.meetCondition.specialInfo.clothesType ]
                                                             },
                                                             1,
                                                             0
@@ -410,7 +460,7 @@ function apiRouter(app, db)
                                                     $cond:
                                                         [
                                                             {
-                                                                $eq: [ "$specialInfo.clothesColor", req.body.specialInfo.clothesColor ]
+                                                                $eq: [ "$specialInfo.clothesColor", req.body.meetCondition.specialInfo.clothesColor ]
                                                             },
                                                             1,
                                                             0
@@ -420,7 +470,7 @@ function apiRouter(app, db)
                                                     $cond:
                                                         [
                                                             {
-                                                                $eq: [ "$specialInfo.clothesStyle", req.body.specialInfo.clothesStyle ]
+                                                                $eq: [ "$specialInfo.clothesStyle", req.body.meetCondition.specialInfo.clothesStyle ]
                                                             },
                                                             1,
                                                             0
@@ -439,13 +489,374 @@ function apiRouter(app, db)
                         ],
                         next
                     );
+                },
+                function(result, next)
+                {
+                    //fake图片
+                    var needFakeNum = 4 - result.length;
+                    if (needFakeNum > 0)
+                    {
+                        for (var i = 0; i < needFakeNum; i++)
+                        {
+                            result.push({username: "fake", specialPic: "fake.png"});
+                        }
+                    }
+                    next(null, result);
                 }
             ],
             finalCallback
         );
     });
 
+    app.post('/meetCreateConfirmClickFake', function(req, res) {
+        function finalCallback(err, result) {
+            if (err){
+                res.statusCode = 400;
+                res.json({result: err.toString()});
+            }
+            else{
+                if (tooManyFake)
+                {
+                    res.json({result: "连续30秒内选择错误图片,请仔细选择特征图片!"});
+                }
+                else
+                {
+                    res.json({result: "请仔细选择特征图片!"});
+                }
+            }
+        }
 
+        var tmpMoment = moment().valueOf();
+        var tooManyFake = false;
+        async.waterfall([
+                function(next)
+                {
+                    db.User.findOne(
+                        {
+                            username: req.user.username
+                        })
+                        .exec(next);
+                },
+                function(result, next)
+                {
+                    if (result.lastFakeTime.valueOf() > moment(tmpMoment).add(-30, 's').valueOf())
+                    {
+                        tooManyFake = true;
+                        db.User.where({username: req.user.username})
+                            .update({lastMeetCreateTime: tmpMoment}, function(err, result){
+                                next(err, result);
+                            });
+                    }
+                    else
+                    {
+                        next(null, null)
+                    }
+                },
+                function(result, next)
+                {
+                    db.User.where({username: req.user.username})
+                        .update({lastFakeTime: tmpMoment}, next);
+                }
+            ],
+            finalCallback
+        );
+    });
+
+    app.post('/meetCreateSelectTarget', function(req, res) {
+//        req.body.target_username = 't1';
+//        req.body.mapLoc = {
+//            name : 'tt',
+//            location : [2, 2],
+//            uid : 'uu'
+//        };
+//        req.body.specialInfo = {
+//            sex: '男',
+//            hair  : '',
+//            glasses : '',
+//            clothesType : '',
+//            clothesColor : '',
+//            clothesStyle : ''
+//        },
+//            req.body.personLoc = [2, 2];
+
+
+        //检查是否满足发meet条件
+        if (!sendMeetCheck(req))
+        {
+            res.statusCode = 400;
+            res.json({result: "不满足发邀请条件"});
+            return;
+        }
+
+        function finalCallback(err, result) {
+            if (err){
+                res.statusCode = 400;
+                res.json({result: err.toString()});
+            }
+            else{
+                res.json(result);
+            }
+        }
+
+        var eachOther = false;
+        var tmpMeet;
+        async.waterfall([
+            function(next){
+                //检查是否是已有朋友
+                db.Friend.find(
+                    {
+                        $or: [
+                            {"creater.username": req.user.username, "target.username": target_username},
+                            {"creater.username": target_username, "target.username": req.user.username}
+                        ]
+                    },
+                    function(err, result)
+                    {
+                        if (err){
+                            res.statusCode = 400;
+                            res.json({result: err.toString()});
+                        }
+                        else{
+                            if (result)
+                            {
+                                //是现有朋友
+                                res.statusCode = 400;
+                                res.json({result: '此人已经是你朋友了!'});
+                            }
+                            else
+                            {
+                                next(null, null);
+                            }
+                        }
+                    }
+                );
+            },
+            function(result, next){
+                //检查是否互发
+                db.Meet.findOne(
+                    {
+                        'creater.username': req.body.target_username,
+                        'target.username': req.user.username,
+                        status: '待回复'
+                    },
+                    next
+                );
+            },
+            function(result, next)
+            {
+                if (result)
+                {
+                    //互发
+                    async.waterfall([
+                            function(next)
+                            {
+                                //建立朋友关系
+                                createFriend(result.creater, req.user, next);
+                            },
+                            function(result, next)
+                            {
+                                //修改原meet为成功状态
+                                db.Meet.findOneAndUpdate(
+                                    {_id: tmpMeet.id},
+                                    {status: '待回复'},
+                                    {},
+                                    function(err, result){
+                                        next(err, {result: "ok"});
+                                    });
+                            }
+                        ],
+                        finalCallback
+                    );
+                }
+                else
+                {
+                    //无互发
+                    async.waterfall([
+                            function(next){
+                                //查询target
+                                db.User.findOne(
+                                    {
+                                        username: req.body.target_username
+                                    },
+                                    next
+                                );
+                            },
+                            function(result, next)
+                            {
+                                //生成meet
+                                db.Meet.create(
+                                    {
+                                        creater: {
+                                            username: req.user.username,
+                                            nickname: req.user.nickname,
+                                            specialPic: req.user.specialPic
+                                        },
+                                        target: {
+                                            username: result.username,
+                                            nickname: result.nickname,
+                                            specialPic: result.specialPic
+                                        },
+                                        status: '待回复',
+                                        replyLeft: 2,
+                                        mapLoc: req.body.mapLoc,
+                                        personLoc: req.body.personLoc,
+                                        specialInfo: req.body.specialInfo
+
+                                    },
+                                    next
+                                );
+                            },
+                            function(result, next)
+                            {
+                                //通知meet双方
+                                db.User.findOneAndUpdate(
+                                    {
+                                        username: req.user.username
+                                    },
+                                    {
+                                        lastMeetCreateTime: moment().valueOf(),
+                                        lastFakeTime: null
+                                    },
+                                    function(err, result){
+                                        next(err, {result: "ok"});
+                                    }
+                                );
+                            }
+
+                        ],
+                        finalCallback
+                    );
+                }
+            }
+        ]);
+    });
+
+    app.post('/meetConfirmSelectTarget', function(req, res) {
+        function finalCallback(err, result) {
+            if (err){
+                res.statusCode = 400;
+                res.json({result: err.toString()});
+            }
+            else{
+                res.json(result);
+            }
+        }
+
+        var eachOther = false;
+        var tmpMeet;
+        async.waterfall([
+            function(next){
+                //检查是否是已有朋友
+                db.Friend.find(
+                    {
+                        $or: [
+                            {"creater.username": req.user.username, "target.username": target_username},
+                            {"creater.username": target_username, "target.username": req.user.username}
+                        ]
+                    },
+                    function(err, result)
+                    {
+                        if (err){
+                            res.statusCode = 400;
+                            res.json({result: err.toString()});
+                        }
+                        else{
+                            if (result)
+                            {
+                                //是现有朋友
+                                res.statusCode = 400;
+                                res.json({result: '此人已经是你朋友了!'});
+                            }
+                            else
+                            {
+                                next(null, null);
+                            }
+                        }
+                    }
+                );
+            },
+            function(result, next)
+            {
+                //查询target
+                db.User.findOne(
+                    {
+                        username: req.body.target_username
+                    },
+                    next
+                );
+            },
+            function(result, next){
+                //完善meet确认信息
+                db.Meet.findOneAndUpdate(
+                    {_id: req.body.meetId},
+                    {
+                        status: '待回复',
+                        target: {
+                            username: result.username,
+                            nickname: result.nickname,
+                            specialPic: result.specialPic
+                        }
+                    },
+                    {},
+                    next
+                );
+            },
+            function(result, next){
+                //检查是否互发
+                db.Meet.findOne(
+                    {
+                        'creater.username': req.body.target_username,
+                        'target.username': req.user.username,
+                        status: '待回复'
+                    },
+                    next
+                );
+            },
+            function(result, next)
+            {
+                if (result)
+                {
+                    //互发
+                    async.waterfall([
+                            function(next)
+                            {
+                                //建立朋友关系
+                                createFriend(result.creater, req.user, next);
+                            },
+                            function(result, next)
+                            {
+                                //修改对方原meet为成功状态
+                                db.Meet.findOneAndUpdate(
+                                    {_id: tmpMeet.id},
+                                    {status: '待回复'},
+                                    {},
+                                    next
+                                );
+                            },
+                            function(result, next)
+                            {
+                                //修改本方原meet为成功状态
+                                db.Meet.findOneAndUpdate(
+                                    {_id: req.body.meetId},
+                                    {
+                                        status: '待回复'
+                                    },
+                                    {},
+                                    function(err, result){
+                                        next(err, {result: "ok"});
+                                    });
+                            }
+                        ],
+                        finalCallback
+                    );
+                }
+                else
+                {
+                    finalCallback(null, {result: "ok"});
+                }
+            }
+        ]);
+    });
 
     app.get('/', function(req, res) {
         res.render('index', { title: 'api' + req.user });
