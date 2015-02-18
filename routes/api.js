@@ -208,6 +208,8 @@ function apiRouter(app, db)
                     nickname: target.nickname
                 }
             },
+            //通知双方
+            //todo
             callback
         );
     }
@@ -709,6 +711,9 @@ function apiRouter(app, db)
                             function(result, next)
                             {
                                 //通知meet双方
+                                //todo
+
+                                //修改最后发送meet时间和最后fake时间
                                 db.User.findOneAndUpdate(
                                     {
                                         username: req.user.username
@@ -858,15 +863,340 @@ function apiRouter(app, db)
         ]);
     });
 
+    app.post('/meetCreateNoTarget', function(req, res) {
+//        req.body.specialInfo = {
+//            sex: '男',
+//            hair  : '',
+//            glasses : '',
+//            clothesType : '',
+//            clothesColor : '',
+//            clothesStyle : ''
+//        };
+//
+//        req.body.mapLoc = {
+//            name : 'tt',
+//            location : [2, 2],
+//            uid : 'uu'
+//        };
+
+        function finalCallback(err, result) {
+            if (err){
+                res.statusCode = 400;
+                res.json({result: err.toString()});
+            }
+            else{
+                res.json(result);
+            }
+        }
+
+        async.waterfall([
+                function(next)
+                {
+                    //生成meet
+                    db.Meet.create(
+                        {
+                            creater: {
+                                username: req.user.username,
+                                nickname: req.user.nickname,
+                                specialPic: req.user.specialPic
+                            },
+                            status: '待确认',
+                            replyLeft: 2,
+                            mapLoc: req.body.mapLoc,
+                            personLoc: req.user.lastLocation,
+                            specialInfo: req.body.specialInfo
+                        },
+                        next
+                    );
+                },
+                function(result, next)
+                {
+                    //修改最后发送meet时间
+                    db.User.findOneAndUpdate(
+                        {
+                            username: req.user.username
+                        },
+                        {
+                            lastMeetCreateTime: moment().valueOf()
+                        },
+                        next
+                    );
+                },
+                function(result, next)
+                {
+                    //通知附近没有specialInfo的人
+                    db.User
+                        .where('lastLocation').near({
+                            center: req.user.lastLocation,
+                            maxDistance: 500,
+                            spherical: true })
+                        .where('username').ne(req.user.username)
+                        .where('lastLocationTime').gt(moment().add(-5, 'm').valueOf())
+                        .where('specialInfoTime').gt(moment(moment().format('YYYY-MM-DD')).valueOf())
+                        .exec( function(err, result)
+                        {
+                            if (err)
+                            {
+                                res.statusCode = 400;
+                                res.json({result: err.toString()});
+                            }
+                            else
+                            {
+                                //console.log(result.map(function(item){return item.username}));
+                                //通知result中的人
+                                //todo
+                                res.json({result: "ok"});
+                            }
+                        });
+                }
+            ],
+            finalCallback
+        );
+    });
+
+    app.post('/updateSpecialInfo', function(req, res) {
+        function finalCallback(err, result) {
+            if (err){
+                res.statusCode = 400;
+                res.json({result: err.toString()});
+            }
+            else{
+                res.json(result);
+            }
+        }
+
+        async.waterfall([
+                function(next)
+                {
+                    db.User.findOneAndUpdate(
+                        {
+                            username: req.user.username
+                        },
+                        {
+                            specialInfo: req.body.specialInfo,
+                            specialPic : req.body.specialPic,
+                            specialInfoTime : moment().valueOf()
+                        },
+                        next
+                    );
+                },
+                function(result, next)
+                {
+                    db.Meet
+                        .where('personLoc').near({
+                            center: req.user.lastLocation,
+                            maxDistance: 500,
+                            spherical: true })
+                        .where('creater.username').ne(req.user.username)
+                        .where('status').equals('待确认')
+                        .exec( function(err, result)
+                        {
+                            if (err)
+                            {
+                                res.statusCode = 400;
+                                res.json({result: err.toString()});
+                            }
+                            else
+                            {
+                                console.log(result.map(function(item){return item.username}));
+                                //通知result中的人
+                                //todo
+                                res.json({result: "ok"});
+                            }
+                        });
+                }
+            ],
+            finalCallback
+        );
+    });
+
+    app.post('/uploadSpecialPic', function(req, res){
+        res.json({result: req.files.avatar.name});
+    });
+
+    app.post('/meetReplySearch', function(req, res) {
+        if (!(req.body.meetId))
+        {
+            res.statusCode = 400;
+            res.json({result: '非法请求,没有meetId!'});
+            return;
+        }
+
+        function finalCallback(err, result) {
+            if (err){
+                res.statusCode = 400;
+                res.json({result: err.toString()});
+            }
+            else{
+                res.json(result);
+            }
+        }
+
+        var meetCreaterUsername;
+        var meetCreaterSpecialPic;
+        async.waterfall([
+                function(next)
+                {
+                    db.Meet.findById(req.body.meetId).exec(next);
+                },
+                function(result, next)
+                {
+                    if (result == null)
+                    {
+                        res.statusCode = 400;
+                        res.json({result: '没找到对应meet'});
+                    }
+                    else if (result.replyLeft <= 0)
+                    {
+                        res.statusCode = 400;
+                        res.json({result: '没有回复次数了'});
+                    }
+                    else
+                    {
+                        db.Meet.findOneAndUpdate(
+                            {_id: req.body.meetId},
+                            {
+                                $inc:
+                                {
+                                    replyLeft: -1
+                                }
+                            },
+                            next
+                        );
+                    }
+                },
+                function(result, next)
+                {
+                    meetCreaterUsername = result.creater.username;
+                    meetCreaterSpecialPic = result.specialPic;
+                    //检查特征信息是否符合
+                    var score = 0;
+                    if (result.specialInfo.hair == req.body.meetCondition.specialInfo.hair)
+                    {
+                        score++;
+                    }
+
+                    if (result.specialInfo.glasses == req.body.meetCondition.specialInfo.glasses)
+                    {
+                        score++;
+                    }
+
+                    if (result.specialInfo.clothesType == req.body.meetCondition.specialInfo.clothesType)
+                    {
+                        score++;
+                    }
+
+                    if (result.specialInfo.clothesColor == req.body.meetCondition.specialInfo.clothesColor)
+                    {
+                        score++;
+                    }
+
+                    if (result.specialInfo.clothesStyle == req.body.meetCondition.specialInfo.clothesStyle)
+                    {
+                        score++;
+                    }
+                    if (result.specialInfo.sex != req.body.meetCondition.specialInfo.sex)
+                    {
+                        score = 0;
+                    }
+
+                    if (score <= 4)
+                    {
+                        res.statusCode = 400;
+                        res.json({result: '特征信息错误!'});
+                    }
+                    else
+                    {
+                        next(null, null);
+                    }
+                },
+                function(result, next)
+                {
+                    //fake图片
+                    var needFakeNum = 4 - 1;
+                    result.push({username: meetCreaterUsername, specialPic: meetCreaterSpecialPic});
+                    if (needFakeNum > 0)
+                    {
+                        for (var i = 0; i < needFakeNum; i++)
+                        {
+                            result.push({username: "fake", specialPic: "fake.png"});
+                        }
+                    }
+                    next(null, result);
+                }
+            ],
+            finalCallback
+        );
+    });
+
+    app.post('/meetReplySelectTarget', function(req, res) {
+        if (!(req.body.meetId && req.body.creater_username))
+        {
+            res.statusCode = 400;
+            res.json({result: '非法请求,没有meetId或目标用户!'});
+            return;
+        }
+
+        function finalCallback(err, result) {
+            if (err){
+                res.statusCode = 400;
+                res.json({result: err.toString()});
+            }
+            else{
+                res.json(result);
+            }
+        }
+
+        async.waterfall([
+                function(next)
+                {
+                    db.Meet.findById(req.body.meetId).exec(next);
+                },
+                function(result, next)
+                {
+                    if (result == null)
+                    {
+                        res.statusCode = 400;
+                        res.json({result: '没找到对应meet'});
+                    }
+                    else
+                    {
+                        if (result.creater.username == req.body.creater_username)
+                        {
+                            //回复成功
+                            //修改原meet为成功状态
+                            db.Meet.findOneAndUpdate(
+                                {_id: req.body.meetId},
+                                {status: '成功'},
+                                {},
+                                function(err, result){
+                                    if (err)
+                                    {
+                                        next(err, null);
+                                    }
+                                    else
+                                    {
+                                        //生成朋友
+                                        createFriend(result.creater, req.user, next);
+                                    }
+                                });
+                        }
+                        else
+                        {
+                            //回复错误
+                            res.statusCode = 400;
+                            res.json({result: '回复了错误对象'});
+                        }
+                    }
+                }
+            ],
+            finalCallback
+        );
+    });
+
     app.get('/', function(req, res) {
         res.render('index', { title: 'api' + req.user });
     });
-
-
-
-
-
-
 
     return app;
 }
